@@ -1,15 +1,30 @@
-const listEl = document.getElementById("list");
-const emptyEl = document.getElementById("empty");
-const countEl = document.getElementById("count");
-const pendingListEl = document.getElementById("pendingList");
-const pendingEmptyEl = document.getElementById("pendingEmpty");
-const clearPendingBtn = document.getElementById("clearPending");
-const modeHintEl = document.getElementById("modeHint");
-const modeRadios = document.querySelectorAll('input[name="blockMode"]');
+const PAGE_SIZE = 8;
 
-const MODE_HINTS = {
-  domain: "Semua halaman di domain yang sama akan diblokir.",
-  full: "Hanya URL yang sama persis yang akan diblokir.",
+const state = {
+  activeTab: "domain",
+  pages: { domain: 1, full: 1, whitelist: 1 },
+  data: { blocked: [], pending: [], whitelist: [] },
+};
+
+const elements = {
+  count: document.getElementById("count"),
+  pendingList: document.getElementById("pendingList"),
+  pendingEmpty: document.getElementById("pendingEmpty"),
+  clearPending: document.getElementById("clearPending"),
+  domainList: document.getElementById("domainList"),
+  domainEmpty: document.getElementById("domainEmpty"),
+  domainPager: document.getElementById("domainPager"),
+  domainCount: document.getElementById("domainCount"),
+  urlList: document.getElementById("urlList"),
+  urlEmpty: document.getElementById("urlEmpty"),
+  urlPager: document.getElementById("urlPager"),
+  urlCount: document.getElementById("urlCount"),
+  whitelistList: document.getElementById("whitelistList"),
+  whitelistEmpty: document.getElementById("whitelistEmpty"),
+  whitelistPager: document.getElementById("whitelistPager"),
+  whitelistCount: document.getElementById("whitelistCount"),
+  tabButtons: document.querySelectorAll(".tabs__btn"),
+  tabPanels: document.querySelectorAll(".tab-panel"),
 };
 
 function sendMessage(message) {
@@ -24,31 +39,83 @@ function sendMessage(message) {
   });
 }
 
-function getSelectedMode() {
-  const checked = document.querySelector('input[name="blockMode"]:checked');
-  return checked?.value || "domain";
+function paginate(items, page) {
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const currentPage = Math.min(Math.max(page, 1), totalPages);
+  const start = (currentPage - 1) * PAGE_SIZE;
+  return {
+    items: items.slice(start, start + PAGE_SIZE),
+    currentPage,
+    totalPages,
+    total: items.length,
+  };
 }
 
-function createBadge(mode) {
-  const badge = document.createElement("span");
-  badge.className = `badge badge--${mode}`;
-  badge.textContent = mode === "domain" ? "Domain" : "URL Penuh";
-  return badge;
+function renderPager(container, pageKey, pagination) {
+  container.innerHTML = "";
+
+  if (pagination.total === 0) return;
+
+  const info = document.createElement("span");
+  info.className = "pager__info";
+  info.textContent = `${pagination.currentPage} / ${pagination.totalPages} (${pagination.total} item)`;
+
+  const prevBtn = document.createElement("button");
+  prevBtn.className = "pager__btn";
+  prevBtn.type = "button";
+  prevBtn.textContent = "‹";
+  prevBtn.disabled = pagination.currentPage <= 1;
+  prevBtn.addEventListener("click", () => {
+    state.pages[pageKey] = pagination.currentPage - 1;
+    renderAll();
+  });
+
+  const nextBtn = document.createElement("button");
+  nextBtn.className = "pager__btn";
+  nextBtn.type = "button";
+  nextBtn.textContent = "›";
+  nextBtn.disabled = pagination.currentPage >= pagination.totalPages;
+  nextBtn.addEventListener("click", () => {
+    state.pages[pageKey] = pagination.currentPage + 1;
+    renderAll();
+  });
+
+  container.appendChild(prevBtn);
+  container.appendChild(info);
+  container.appendChild(nextBtn);
 }
 
-function renderBlockedList(urls) {
+function createRemoveButton(label, onClick) {
+  const btn = document.createElement("button");
+  btn.className = "list-item__remove";
+  btn.type = "button";
+  btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function createActionButton(label, className, onClick) {
+  const btn = document.createElement("button");
+  btn.className = `btn ${className}`;
+  btn.type = "button";
+  btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function renderEntryList(listEl, emptyEl, pagerEl, items, pageKey, onRemove) {
   listEl.innerHTML = "";
+  const pagination = paginate(items, state.pages[pageKey]);
 
-  if (urls.length === 0) {
+  if (pagination.total === 0) {
     emptyEl.style.display = "block";
-    countEl.textContent = "0 URL terblokir";
-    return;
+    pagerEl.innerHTML = "";
+    return pagination;
   }
 
   emptyEl.style.display = "none";
-  countEl.textContent = `${urls.length} URL terblokir`;
 
-  urls.forEach((entry) => {
+  pagination.items.forEach((entry) => {
     const item = document.createElement("li");
     item.className = "list-item";
 
@@ -61,40 +128,29 @@ function renderBlockedList(urls) {
     urlSpan.title = entry.url;
 
     info.appendChild(urlSpan);
-    info.appendChild(createBadge(entry.mode));
-
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "list-item__remove";
-    removeBtn.type = "button";
-    removeBtn.textContent = "Hapus";
-    removeBtn.addEventListener("click", async () => {
-      await sendMessage({
-        action: "removeBlocked",
-        url: entry.url,
-        mode: entry.mode,
-      });
-      loadAll();
-    });
-
     item.appendChild(info);
-    item.appendChild(removeBtn);
+    item.appendChild(createRemoveButton("Hapus", () => onRemove(entry)));
     listEl.appendChild(item);
   });
+
+  renderPager(pagerEl, pageKey, pagination);
+  return pagination;
 }
 
-function renderPendingList(urls) {
-  pendingListEl.innerHTML = "";
+function renderPendingList() {
+  const urls = state.data.pending;
+  elements.pendingList.innerHTML = "";
 
   if (urls.length === 0) {
-    pendingEmptyEl.style.display = "block";
-    clearPendingBtn.style.display = "none";
+    elements.pendingEmpty.style.display = "block";
+    elements.clearPending.style.display = "none";
     return;
   }
 
-  pendingEmptyEl.style.display = "none";
-  clearPendingBtn.style.display = "inline";
+  elements.pendingEmpty.style.display = "none";
+  elements.clearPending.style.display = "inline";
 
-  urls.forEach((entry) => {
+  urls.slice(0, 10).forEach((entry) => {
     const item = document.createElement("li");
     item.className = "list-item list-item--pending";
 
@@ -105,72 +161,144 @@ function renderPendingList(urls) {
     urlSpan.className = "list-item__url";
     urlSpan.textContent = entry.url;
     urlSpan.title = entry.url;
-
     info.appendChild(urlSpan);
 
     const actions = document.createElement("div");
     actions.className = "list-item__actions";
 
-    const blockBtn = document.createElement("button");
-    blockBtn.className = "btn btn--block";
-    blockBtn.type = "button";
-    blockBtn.textContent = "Blokir";
-    blockBtn.addEventListener("click", async () => {
-      const mode = getSelectedMode();
-      await sendMessage({ action: "addBlocked", url: entry.url, mode });
-      loadAll();
-    });
-
-    const dismissBtn = document.createElement("button");
-    dismissBtn.className = "btn btn--dismiss";
-    dismissBtn.type = "button";
-    dismissBtn.textContent = "Abaikan";
-    dismissBtn.addEventListener("click", async () => {
-      await sendMessage({ action: "removePending", url: entry.url });
-      loadAll();
-    });
-
-    actions.appendChild(blockBtn);
-    actions.appendChild(dismissBtn);
+    actions.appendChild(
+      createActionButton("Domain", "btn--block", async () => {
+        await sendMessage({ action: "addBlocked", url: entry.url, mode: "domain" });
+        await loadData();
+      })
+    );
+    actions.appendChild(
+      createActionButton("URL", "btn--block", async () => {
+        await sendMessage({ action: "addBlocked", url: entry.url, mode: "full" });
+        await loadData();
+      })
+    );
+    actions.appendChild(
+      createActionButton("Whitelist", "btn--whitelist", async () => {
+        await sendMessage({ action: "addWhitelist", url: entry.url });
+        await loadData();
+      })
+    );
+    actions.appendChild(
+      createActionButton("×", "btn--dismiss", async () => {
+        await sendMessage({ action: "removePending", url: entry.url });
+        await loadData();
+      })
+    );
 
     item.appendChild(info);
     item.appendChild(actions);
-    pendingListEl.appendChild(item);
+    elements.pendingList.appendChild(item);
   });
 }
 
-async function loadDefaultMode() {
-  const response = await sendMessage({ action: "getDefaultMode" });
-  const mode = response?.mode || "domain";
+function renderAll() {
+  const domainItems = state.data.blocked.filter((e) => e.mode === "domain");
+  const urlItems = state.data.blocked.filter((e) => e.mode === "full");
+  const whitelistItems = state.data.whitelist.map((url) => ({ url }));
 
-  modeRadios.forEach((radio) => {
-    radio.checked = radio.value === mode;
-  });
+  elements.domainCount.textContent = String(domainItems.length);
+  elements.urlCount.textContent = String(urlItems.length);
+  elements.whitelistCount.textContent = String(whitelistItems.length);
 
-  modeHintEl.textContent = MODE_HINTS[mode];
+  elements.count.textContent = `${domainItems.length} domain · ${urlItems.length} URL · ${whitelistItems.length} whitelist`;
+
+  renderEntryList(
+    elements.domainList,
+    elements.domainEmpty,
+    elements.domainPager,
+    domainItems,
+    "domain",
+    async (entry) => {
+      await sendMessage({ action: "removeBlocked", url: entry.url, mode: "domain" });
+      await loadData();
+    }
+  );
+
+  renderEntryList(
+    elements.urlList,
+    elements.urlEmpty,
+    elements.urlPager,
+    urlItems,
+    "full",
+    async (entry) => {
+      await sendMessage({ action: "removeBlocked", url: entry.url, mode: "full" });
+      await loadData();
+    }
+  );
+
+  renderEntryList(
+    elements.whitelistList,
+    elements.whitelistEmpty,
+    elements.whitelistPager,
+    whitelistItems,
+    "whitelist",
+    async (entry) => {
+      await sendMessage({ action: "removeWhitelist", url: entry.url });
+      await loadData();
+    }
+  );
+
+  renderPendingList();
 }
 
-async function loadAll() {
-  const [blocked, pending] = await Promise.all([
+function switchTab(tabName) {
+  state.activeTab = tabName;
+
+  elements.tabButtons.forEach((btn) => {
+    const isActive = btn.dataset.tab === tabName;
+    btn.classList.toggle("tabs__btn--active", isActive);
+    btn.setAttribute("aria-selected", String(isActive));
+  });
+
+  elements.tabPanels.forEach((panel) => {
+    panel.classList.toggle("tab-panel--active", panel.dataset.panel === tabName);
+  });
+}
+
+async function loadData() {
+  const [blocked, pending, whitelist] = await Promise.all([
     sendMessage({ action: "getBlocked" }),
     sendMessage({ action: "getPending" }),
+    sendMessage({ action: "getWhitelist" }),
   ]);
 
-  renderBlockedList(blocked?.urls || []);
-  renderPendingList(pending?.urls || []);
+  state.data.blocked = blocked?.urls || [];
+  state.data.pending = pending?.urls || [];
+  state.data.whitelist = whitelist?.urls || [];
+
+  const domainTotal = state.data.blocked.filter((e) => e.mode === "domain").length;
+  const urlTotal = state.data.blocked.filter((e) => e.mode === "full").length;
+  const whitelistTotal = state.data.whitelist.length;
+
+  state.pages.domain = Math.min(
+    state.pages.domain,
+    Math.max(1, Math.ceil(domainTotal / PAGE_SIZE))
+  );
+  state.pages.full = Math.min(
+    state.pages.full,
+    Math.max(1, Math.ceil(urlTotal / PAGE_SIZE))
+  );
+  state.pages.whitelist = Math.min(
+    state.pages.whitelist,
+    Math.max(1, Math.ceil(whitelistTotal / PAGE_SIZE))
+  );
+
+  renderAll();
 }
 
-modeRadios.forEach((radio) => {
-  radio.addEventListener("change", async () => {
-    const mode = getSelectedMode();
-    modeHintEl.textContent = MODE_HINTS[mode];
-    await sendMessage({ action: "setDefaultMode", mode });
-  });
+elements.tabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
-clearPendingBtn.addEventListener("click", async () => {
+elements.clearPending.addEventListener("click", async () => {
   await sendMessage({ action: "clearPending" });
-  loadAll();
+  await loadData();
 });
 
-loadDefaultMode().then(loadAll);
+loadData();

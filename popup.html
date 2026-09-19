@@ -9,27 +9,10 @@
   <body>
     <header class="header">
       <h1>Tab Blocker</h1>
-      <p id="count" class="count">0 URL terblokir</p>
+      <p id="count" class="count">0 domain · 0 URL · 0 whitelist</p>
     </header>
 
-    <section class="section">
-      <h2 class="section__title">Pengaturan Blokir</h2>
-      <div class="mode-toggle">
-        <label class="mode-option">
-          <input type="radio" name="blockMode" value="domain" checked />
-          <span>Blokir Domain</span>
-        </label>
-        <label class="mode-option">
-          <input type="radio" name="blockMode" value="full" />
-          <span>Blokir URL Penuh</span>
-        </label>
-      </div>
-      <p class="mode-hint" id="modeHint">
-        Semua halaman di domain yang sama akan diblokir.
-      </p>
-    </section>
-
-    <section class="section">
+    <section class="section section--pending">
       <div class="section__header">
         <h2 class="section__title">Tab Baru Terdeteksi</h2>
         <button id="clearPending" class="link-btn" type="button">Bersihkan</button>
@@ -38,10 +21,56 @@
       <p id="pendingEmpty" class="empty">Belum ada tab baru terdeteksi.</p>
     </section>
 
-    <section class="section">
-      <h2 class="section__title">Daftar Blokir</h2>
-      <ul id="list" class="list"></ul>
-      <p id="empty" class="empty">Belum ada URL yang diblokir.</p>
+    <nav class="tabs" role="tablist">
+      <button
+        class="tabs__btn tabs__btn--active"
+        type="button"
+        role="tab"
+        data-tab="domain"
+        aria-selected="true"
+      >
+        Blokir Domain
+        <span id="domainCount" class="tabs__badge">0</span>
+      </button>
+      <button
+        class="tabs__btn"
+        type="button"
+        role="tab"
+        data-tab="full"
+        aria-selected="false"
+      >
+        Blokir URL
+        <span id="urlCount" class="tabs__badge">0</span>
+      </button>
+      <button
+        class="tabs__btn"
+        type="button"
+        role="tab"
+        data-tab="whitelist"
+        aria-selected="false"
+      >
+        Whitelist
+        <span id="whitelistCount" class="tabs__badge">0</span>
+      </button>
+    </nav>
+
+    <section class="tab-panel tab-panel--active" data-panel="domain">
+      <ul id="domainList" class="list"></ul>
+      <p id="domainEmpty" class="empty">Belum ada domain yang diblokir.</p>
+      <div id="domainPager" class="pager"></div>
+    </section>
+
+    <section class="tab-panel" data-panel="full">
+      <ul id="urlList" class="list"></ul>
+      <p id="urlEmpty" class="empty">Belum ada URL yang diblokir.</p>
+      <div id="urlPager" class="pager"></div>
+    </section>
+
+    <section class="tab-panel" data-panel="whitelist">
+      <p class="tab-hint">Domain di whitelist tidak akan pernah ditutup, meski ada di daftar blokir.</p>
+      <ul id="whitelistList" class="list"></ul>
+      <p id="whitelistEmpty" class="empty">Belum ada domain di whitelist.</p>
+      <div id="whitelistPager" class="pager"></div>
     </section>
 
     <script src="popup.js"></script>
