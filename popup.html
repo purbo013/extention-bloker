@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tab Blocker</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>Tab Blocker</h1>
+      <p id="count" class="count">0 URL terblokir</p>
+    </header>
+
+    <section class="section">
+      <h2 class="section__title">Pengaturan Blokir</h2>
+      <div class="mode-toggle">
+        <label class="mode-option">
+          <input type="radio" name="blockMode" value="domain" checked />
+          <span>Blokir Domain</span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="blockMode" value="full" />
+          <span>Blokir URL Penuh</span>
+        </label>
+      </div>
+      <p class="mode-hint" id="modeHint">
+        Semua halaman di domain yang sama akan diblokir.
+      </p>
+    </section>
+
+    <section class="section">
+      <div class="section__header">
+        <h2 class="section__title">Tab Baru Terdeteksi</h2>
+        <button id="clearPending" class="link-btn" type="button">Bersihkan</button>
+      </div>
+      <ul id="pendingList" class="list"></ul>
+      <p id="pendingEmpty" class="empty">Belum ada tab baru terdeteksi.</p>
+    </section>
+
+    <section class="section">
+      <h2 class="section__title">Daftar Blokir</h2>
+      <ul id="list" class="list"></ul>
+      <p id="empty" class="empty">Belum ada URL yang diblokir.</p>
+    </section>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

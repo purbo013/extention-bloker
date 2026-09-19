@@ -1,0 +1,35 @@
+#tab-blocker-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2147483647;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: #e53935;
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: background 0.2s ease, transform 0.15s ease;
+}
+
+#tab-blocker-fab:hover {
+  background: #c62828;
+  transform: scale(1.08);
+}
+
+#tab-blocker-fab:active {
+  transform: scale(0.95);
+}
+
+#tab-blocker-fab:disabled {
+  cursor: wait;
+  opacity: 0.8;
+}
+
+#tab-blocker-fab.tab-blocker-fab--success {
+  background: #2e7d32;
+}
