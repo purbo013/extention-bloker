@@ -2,8 +2,8 @@ const PAGE_SIZE = 8;
 
 const state = {
   activeTab: "domain",
-  pages: { domain: 1, full: 1, whitelist: 1 },
-  data: { blocked: [], pending: [], whitelist: [] },
+  pages: { domain: 1, full: 1, keyword: 1, whitelist: 1 },
+  data: { blocked: [], pending: [], whitelist: [], keywords: [] },
 };
 
 const elements = {
@@ -19,6 +19,12 @@ const elements = {
   urlEmpty: document.getElementById("urlEmpty"),
   urlPager: document.getElementById("urlPager"),
   urlCount: document.getElementById("urlCount"),
+  keywordList: document.getElementById("keywordList"),
+  keywordEmpty: document.getElementById("keywordEmpty"),
+  keywordPager: document.getElementById("keywordPager"),
+  keywordCount: document.getElementById("keywordCount"),
+  keywordForm: document.getElementById("keywordForm"),
+  keywordInput: document.getElementById("keywordInput"),
   whitelistList: document.getElementById("whitelistList"),
   whitelistEmpty: document.getElementById("whitelistEmpty"),
   whitelistPager: document.getElementById("whitelistPager"),
@@ -51,7 +57,7 @@ function paginate(items, page) {
   };
 }
 
-function renderPager(container, pageKey, pagination) {
+function renderPager(container, pageKey, pagination, onPageChange) {
   container.innerHTML = "";
 
   if (pagination.total === 0) return;
@@ -67,7 +73,7 @@ function renderPager(container, pageKey, pagination) {
   prevBtn.disabled = pagination.currentPage <= 1;
   prevBtn.addEventListener("click", () => {
     state.pages[pageKey] = pagination.currentPage - 1;
-    renderAll();
+    onPageChange();
   });
 
   const nextBtn = document.createElement("button");
@@ -77,7 +83,7 @@ function renderPager(container, pageKey, pagination) {
   nextBtn.disabled = pagination.currentPage >= pagination.totalPages;
   nextBtn.addEventListener("click", () => {
     state.pages[pageKey] = pagination.currentPage + 1;
-    renderAll();
+    onPageChange();
   });
 
   container.appendChild(prevBtn);
@@ -133,8 +139,47 @@ function renderEntryList(listEl, emptyEl, pagerEl, items, pageKey, onRemove) {
     listEl.appendChild(item);
   });
 
-  renderPager(pagerEl, pageKey, pagination);
+  renderPager(pagerEl, pageKey, pagination, renderAll);
   return pagination;
+}
+
+function renderKeywordList() {
+  const items = state.data.keywords.map((keyword) => ({ url: keyword }));
+  elements.keywordList.innerHTML = "";
+  const pagination = paginate(items, state.pages.keyword);
+
+  if (pagination.total === 0) {
+    elements.keywordEmpty.style.display = "block";
+    elements.keywordPager.innerHTML = "";
+    return;
+  }
+
+  elements.keywordEmpty.style.display = "none";
+
+  pagination.items.forEach((entry) => {
+    const item = document.createElement("li");
+    item.className = "list-item";
+
+    const info = document.createElement("div");
+    info.className = "list-item__info";
+
+    const keywordSpan = document.createElement("span");
+    keywordSpan.className = "list-item__url list-item__keyword";
+    keywordSpan.textContent = entry.url;
+    keywordSpan.title = entry.url;
+
+    info.appendChild(keywordSpan);
+    item.appendChild(info);
+    item.appendChild(
+      createRemoveButton("Hapus", async () => {
+        await sendMessage({ action: "removeKeyword", keyword: entry.url });
+        await loadData();
+      })
+    );
+    elements.keywordList.appendChild(item);
+  });
+
+  renderPager(elements.keywordPager, "keyword", pagination, renderAll);
 }
 
 function renderPendingList() {
@@ -179,7 +224,19 @@ function renderPendingList() {
       })
     );
     actions.appendChild(
-      createActionButton("Whitelist", "btn--whitelist", async () => {
+      createActionButton("Kata", "btn--keyword", async () => {
+        const suggested = await sendMessage({
+          action: "suggestKeyword",
+          url: entry.url,
+        });
+        const keyword = prompt("Kata kunci untuk diblokir:", suggested?.keyword || "");
+        if (!keyword) return;
+        await sendMessage({ action: "addKeyword", keyword });
+        await loadData();
+      })
+    );
+    actions.appendChild(
+      createActionButton("White", "btn--whitelist", async () => {
         await sendMessage({ action: "addWhitelist", url: entry.url });
         await loadData();
       })
@@ -204,9 +261,10 @@ function renderAll() {
 
   elements.domainCount.textContent = String(domainItems.length);
   elements.urlCount.textContent = String(urlItems.length);
+  elements.keywordCount.textContent = String(state.data.keywords.length);
   elements.whitelistCount.textContent = String(whitelistItems.length);
 
-  elements.count.textContent = `${domainItems.length} domain · ${urlItems.length} URL · ${whitelistItems.length} whitelist`;
+  elements.count.textContent = `${domainItems.length} domain · ${urlItems.length} URL · ${state.data.keywords.length} kata · ${whitelistItems.length} whitelist`;
 
   renderEntryList(
     elements.domainList,
@@ -231,6 +289,8 @@ function renderAll() {
       await loadData();
     }
   );
+
+  renderKeywordList();
 
   renderEntryList(
     elements.whitelistList,
@@ -261,33 +321,30 @@ function switchTab(tabName) {
   });
 }
 
+function clampPage(pageKey, total) {
+  state.pages[pageKey] = Math.min(
+    state.pages[pageKey],
+    Math.max(1, Math.ceil(total / PAGE_SIZE))
+  );
+}
+
 async function loadData() {
-  const [blocked, pending, whitelist] = await Promise.all([
+  const [blocked, pending, whitelist, keywords] = await Promise.all([
     sendMessage({ action: "getBlocked" }),
     sendMessage({ action: "getPending" }),
     sendMessage({ action: "getWhitelist" }),
+    sendMessage({ action: "getKeywords" }),
   ]);
 
   state.data.blocked = blocked?.urls || [];
   state.data.pending = pending?.urls || [];
   state.data.whitelist = whitelist?.urls || [];
+  state.data.keywords = keywords?.keywords || [];
 
-  const domainTotal = state.data.blocked.filter((e) => e.mode === "domain").length;
-  const urlTotal = state.data.blocked.filter((e) => e.mode === "full").length;
-  const whitelistTotal = state.data.whitelist.length;
-
-  state.pages.domain = Math.min(
-    state.pages.domain,
-    Math.max(1, Math.ceil(domainTotal / PAGE_SIZE))
-  );
-  state.pages.full = Math.min(
-    state.pages.full,
-    Math.max(1, Math.ceil(urlTotal / PAGE_SIZE))
-  );
-  state.pages.whitelist = Math.min(
-    state.pages.whitelist,
-    Math.max(1, Math.ceil(whitelistTotal / PAGE_SIZE))
-  );
+  clampPage("domain", state.data.blocked.filter((e) => e.mode === "domain").length);
+  clampPage("full", state.data.blocked.filter((e) => e.mode === "full").length);
+  clampPage("keyword", state.data.keywords.length);
+  clampPage("whitelist", state.data.whitelist.length);
 
   renderAll();
 }
@@ -298,6 +355,16 @@ elements.tabButtons.forEach((btn) => {
 
 elements.clearPending.addEventListener("click", async () => {
   await sendMessage({ action: "clearPending" });
+  await loadData();
+});
+
+elements.keywordForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const keyword = elements.keywordInput.value.trim();
+  if (!keyword) return;
+
+  await sendMessage({ action: "addKeyword", keyword });
+  elements.keywordInput.value = "";
   await loadData();
 });
 

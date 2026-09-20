@@ -1,5 +1,6 @@
 const STORAGE_KEY = "blockedUrls";
 const WHITELIST_KEY = "whitelistDomains";
+const KEYWORD_KEY = "blockedKeywords";
 const PENDING_KEY = "pendingUrls";
 const DEFAULT_MODE_KEY = "defaultBlockMode";
 const MAX_PENDING = 30;
@@ -68,6 +69,21 @@ async function getWhitelistDomains() {
   return result[WHITELIST_KEY] || [];
 }
 
+async function getBlockedKeywords() {
+  const result = await chrome.storage.local.get(KEYWORD_KEY);
+  return result[KEYWORD_KEY] || [];
+}
+
+function normalizeKeyword(keyword) {
+  return keyword.trim().toLowerCase();
+}
+
+function matchesKeyword(tabUrl, keywords) {
+  if (!keywords.length) return false;
+  const haystack = normalizeUrl(tabUrl).toLowerCase();
+  return keywords.some((keyword) => haystack.includes(keyword));
+}
+
 async function getPendingUrls() {
   const result = await chrome.storage.local.get(PENDING_KEY);
   const pending = result[PENDING_KEY] || [];
@@ -101,8 +117,9 @@ function isWhitelisted(tabUrl, whitelist) {
   return whitelist.includes(domain);
 }
 
-function isBlocked(tabUrl, blockedList, whitelist) {
+function isBlocked(tabUrl, blockedList, whitelist, keywords) {
   if (isSystemUrl(tabUrl)) return false;
+  if (matchesKeyword(tabUrl, keywords)) return true;
   if (isWhitelisted(tabUrl, whitelist)) return false;
   return blockedList.some((entry) => matchesEntry(tabUrl, entry));
 }
@@ -154,16 +171,54 @@ async function removeWhitelistDomain(domain) {
   await chrome.storage.local.set({ [WHITELIST_KEY]: filtered });
 }
 
+async function addBlockedKeyword(keyword) {
+  const normalized = normalizeKeyword(keyword);
+  if (!normalized) {
+    return { added: false, keyword: normalized };
+  }
+
+  const keywords = await getBlockedKeywords();
+  if (keywords.includes(normalized)) {
+    return { added: false, keyword: normalized };
+  }
+
+  keywords.push(normalized);
+  await chrome.storage.local.set({ [KEYWORD_KEY]: keywords });
+  return { added: true, keyword: normalized };
+}
+
+async function removeBlockedKeyword(keyword) {
+  const normalized = normalizeKeyword(keyword);
+  const keywords = await getBlockedKeywords();
+  const filtered = keywords.filter((item) => item !== normalized);
+  await chrome.storage.local.set({ [KEYWORD_KEY]: filtered });
+}
+
+function suggestKeywordFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length) {
+      return decodeURIComponent(parts[parts.length - 1]).slice(0, 50);
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
 async function capturePendingUrl(url) {
   if (!url || isSystemUrl(url)) return;
 
   const whitelist = await getWhitelistDomains();
+  const keywords = await getBlockedKeywords();
+  const blockedUrls = await getBlockedUrls();
+
+  if (isBlocked(url, blockedUrls, whitelist, keywords)) return;
+
   if (isWhitelisted(url, whitelist)) return;
 
   const normalized = normalizeUrl(url);
-  const blockedUrls = await getBlockedUrls();
-
-  if (isBlocked(url, blockedUrls, whitelist)) return;
 
   const pending = await getPendingUrls();
   const filtered = pending.filter((item) => item.url !== normalized);
@@ -197,8 +252,9 @@ async function checkAndCloseTab(tabId, url) {
 
   const blockedUrls = await getBlockedUrls();
   const whitelist = await getWhitelistDomains();
+  const keywords = await getBlockedKeywords();
 
-  if (isBlocked(url, blockedUrls, whitelist)) {
+  if (isBlocked(url, blockedUrls, whitelist, keywords)) {
     try {
       await chrome.tabs.remove(tabId);
     } catch {
@@ -241,6 +297,12 @@ function setupContextMenus() {
       title: "Whitelist domain link ini",
       contexts: ["link"],
     });
+
+    chrome.contextMenus.create({
+      id: "block-selection-keyword",
+      title: "Blokir kata terpilih",
+      contexts: ["selection"],
+    });
   });
 }
 
@@ -253,9 +315,6 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  const blockedUrls = await getBlockedUrls();
-  const whitelist = await getWhitelistDomains();
-
   if (info.menuItemId === "block-page-domain" && info.pageUrl) {
     await addBlockedUrl(info.pageUrl, "domain");
   } else if (info.menuItemId === "block-page-url" && info.pageUrl) {
@@ -266,14 +325,17 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     await addBlockedUrl(info.linkUrl, "full");
   } else if (info.menuItemId === "whitelist-link-domain" && info.linkUrl) {
     await addWhitelistDomain(info.linkUrl);
+  } else if (info.menuItemId === "block-selection-keyword" && info.selectionText) {
+    await addBlockedKeyword(info.selectionText);
   } else {
     return;
   }
 
   const updatedBlocked = await getBlockedUrls();
   const updatedWhitelist = await getWhitelistDomains();
+  const updatedKeywords = await getBlockedKeywords();
 
-  if (tab?.id && tab.url && isBlocked(tab.url, updatedBlocked, updatedWhitelist)) {
+  if (tab?.id && tab.url && isBlocked(tab.url, updatedBlocked, updatedWhitelist, updatedKeywords)) {
     try {
       await chrome.tabs.remove(tab.id);
     } catch {
@@ -305,13 +367,46 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (_sender.tab?.id && _sender.tab.url) {
         const blockedUrls = await getBlockedUrls();
         const whitelist = await getWhitelistDomains();
-        if (isBlocked(_sender.tab.url, blockedUrls, whitelist)) {
+        const keywords = await getBlockedKeywords();
+        if (isBlocked(_sender.tab.url, blockedUrls, whitelist, keywords)) {
           chrome.tabs.remove(_sender.tab.id).catch(() => {});
         }
       }
       sendResponse(result);
     });
     return true;
+  }
+
+  if (message.action === "addKeyword") {
+    addBlockedKeyword(message.keyword).then(async (result) => {
+      if (_sender.tab?.id && _sender.tab.url) {
+        const blockedUrls = await getBlockedUrls();
+        const whitelist = await getWhitelistDomains();
+        const keywords = await getBlockedKeywords();
+        if (isBlocked(_sender.tab.url, blockedUrls, whitelist, keywords)) {
+          chrome.tabs.remove(_sender.tab.id).catch(() => {});
+        }
+      }
+      sendResponse(result);
+    });
+    return true;
+  }
+
+  if (message.action === "getKeywords") {
+    getBlockedKeywords().then((keywords) => sendResponse({ keywords }));
+    return true;
+  }
+
+  if (message.action === "removeKeyword") {
+    removeBlockedKeyword(message.keyword).then(() =>
+      sendResponse({ success: true })
+    );
+    return true;
+  }
+
+  if (message.action === "suggestKeyword") {
+    sendResponse({ keyword: suggestKeywordFromUrl(message.url) });
+    return false;
   }
 
   if (message.action === "getBlocked") {

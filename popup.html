@@ -9,7 +9,7 @@
   <body>
     <header class="header">
       <h1>Tab Blocker</h1>
-      <p id="count" class="count">0 domain · 0 URL · 0 whitelist</p>
+      <p id="count" class="count">0 domain · 0 URL · 0 kata · 0 whitelist</p>
     </header>
 
     <section class="section section--pending">
@@ -29,7 +29,7 @@
         data-tab="domain"
         aria-selected="true"
       >
-        Blokir Domain
+        Domain
         <span id="domainCount" class="tabs__badge">0</span>
       </button>
       <button
@@ -39,8 +39,18 @@
         data-tab="full"
         aria-selected="false"
       >
-        Blokir URL
+        URL
         <span id="urlCount" class="tabs__badge">0</span>
+      </button>
+      <button
+        class="tabs__btn"
+        type="button"
+        role="tab"
+        data-tab="keyword"
+        aria-selected="false"
+      >
+        Kata
+        <span id="keywordCount" class="tabs__badge">0</span>
       </button>
       <button
         class="tabs__btn"
@@ -49,7 +59,7 @@
         data-tab="whitelist"
         aria-selected="false"
       >
-        Whitelist
+        White
         <span id="whitelistCount" class="tabs__badge">0</span>
       </button>
     </nav>
@@ -66,8 +76,29 @@
       <div id="urlPager" class="pager"></div>
     </section>
 
+    <section class="tab-panel" data-panel="keyword">
+      <p class="tab-hint tab-hint--keyword">
+        URL yang mengandung kata ini akan ditutup, meski domain ada di whitelist.
+      </p>
+      <form id="keywordForm" class="keyword-form">
+        <input
+          id="keywordInput"
+          class="keyword-form__input"
+          type="text"
+          placeholder="Contoh: shorts, reels, /r/gaming"
+          autocomplete="off"
+        />
+        <button class="keyword-form__btn" type="submit">Tambah</button>
+      </form>
+      <ul id="keywordList" class="list"></ul>
+      <p id="keywordEmpty" class="empty">Belum ada kata kunci yang diblokir.</p>
+      <div id="keywordPager" class="pager"></div>
+    </section>
+
     <section class="tab-panel" data-panel="whitelist">
-      <p class="tab-hint">Domain di whitelist tidak akan pernah ditutup, meski ada di daftar blokir.</p>
+      <p class="tab-hint">
+        Domain di whitelist tidak akan ditutup, kecuali URL mengandung kata kunci blokir.
+      </p>
       <ul id="whitelistList" class="list"></ul>
       <p id="whitelistEmpty" class="empty">Belum ada domain di whitelist.</p>
       <div id="whitelistPager" class="pager"></div>
