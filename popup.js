@@ -91,11 +91,14 @@ function renderPager(container, pageKey, pagination, onPageChange) {
   container.appendChild(nextBtn);
 }
 
-function createRemoveButton(label, onClick) {
+function createRemoveButton(onClick) {
   const btn = document.createElement("button");
   btn.className = "list-item__remove";
   btn.type = "button";
-  btn.textContent = label;
+  btn.title = "Hapus";
+  btn.setAttribute("aria-label", "Hapus");
+  btn.innerHTML =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14ZM10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   btn.addEventListener("click", onClick);
   return btn;
 }
@@ -107,6 +110,14 @@ function createActionButton(label, className, onClick) {
   btn.textContent = label;
   btn.addEventListener("click", onClick);
   return btn;
+}
+
+function createHitsBadge(hits) {
+  const badge = document.createElement("span");
+  badge.className = "list-item__hits";
+  badge.textContent = String(hits || 0);
+  badge.title = `Terdeteksi ${hits || 0} kali`;
+  return badge;
 }
 
 function renderEntryList(listEl, emptyEl, pagerEl, items, pageKey, onRemove) {
@@ -135,7 +146,8 @@ function renderEntryList(listEl, emptyEl, pagerEl, items, pageKey, onRemove) {
 
     info.appendChild(urlSpan);
     item.appendChild(info);
-    item.appendChild(createRemoveButton("Hapus", () => onRemove(entry)));
+    item.appendChild(createHitsBadge(entry.hits));
+    item.appendChild(createRemoveButton(() => onRemove(entry)));
     listEl.appendChild(item);
   });
 
@@ -144,7 +156,7 @@ function renderEntryList(listEl, emptyEl, pagerEl, items, pageKey, onRemove) {
 }
 
 function renderKeywordList() {
-  const items = state.data.keywords.map((keyword) => ({ url: keyword }));
+  const items = state.data.keywords;
   elements.keywordList.innerHTML = "";
   const pagination = paginate(items, state.pages.keyword);
 
@@ -165,14 +177,15 @@ function renderKeywordList() {
 
     const keywordSpan = document.createElement("span");
     keywordSpan.className = "list-item__url list-item__keyword";
-    keywordSpan.textContent = entry.url;
-    keywordSpan.title = entry.url;
+    keywordSpan.textContent = entry.keyword;
+    keywordSpan.title = entry.keyword;
 
     info.appendChild(keywordSpan);
     item.appendChild(info);
+    item.appendChild(createHitsBadge(entry.hits));
     item.appendChild(
-      createRemoveButton("Hapus", async () => {
-        await sendMessage({ action: "removeKeyword", keyword: entry.url });
+      createRemoveButton(async () => {
+        await sendMessage({ action: "removeKeyword", keyword: entry.keyword });
         await loadData();
       })
     );
@@ -207,6 +220,9 @@ function renderPendingList() {
     urlSpan.textContent = entry.url;
     urlSpan.title = entry.url;
     info.appendChild(urlSpan);
+
+    item.appendChild(info);
+    item.appendChild(createHitsBadge(entry.hits));
 
     const actions = document.createElement("div");
     actions.className = "list-item__actions";
@@ -248,7 +264,6 @@ function renderPendingList() {
       })
     );
 
-    item.appendChild(info);
     item.appendChild(actions);
     elements.pendingList.appendChild(item);
   });
@@ -257,7 +272,7 @@ function renderPendingList() {
 function renderAll() {
   const domainItems = state.data.blocked.filter((e) => e.mode === "domain");
   const urlItems = state.data.blocked.filter((e) => e.mode === "full");
-  const whitelistItems = state.data.whitelist.map((url) => ({ url }));
+  const whitelistItems = state.data.whitelist;
 
   elements.domainCount.textContent = String(domainItems.length);
   elements.urlCount.textContent = String(urlItems.length);

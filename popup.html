@@ -17,6 +17,10 @@
         <h2 class="section__title">Tab Baru Terdeteksi</h2>
         <button id="clearPending" class="link-btn" type="button">Bersihkan</button>
       </div>
+      <div class="list-header list-header--pending">
+        <span class="list-header__label">URL</span>
+        <span class="list-header__hits">Deteksi</span>
+      </div>
       <ul id="pendingList" class="list"></ul>
       <p id="pendingEmpty" class="empty">Belum ada tab baru terdeteksi.</p>
     </section>
@@ -65,12 +69,20 @@
     </nav>
 
     <section class="tab-panel tab-panel--active" data-panel="domain">
+      <div class="list-header">
+        <span class="list-header__label">Domain</span>
+        <span class="list-header__hits">Deteksi</span>
+      </div>
       <ul id="domainList" class="list"></ul>
       <p id="domainEmpty" class="empty">Belum ada domain yang diblokir.</p>
       <div id="domainPager" class="pager"></div>
     </section>
 
     <section class="tab-panel" data-panel="full">
+      <div class="list-header">
+        <span class="list-header__label">URL</span>
+        <span class="list-header__hits">Deteksi</span>
+      </div>
       <ul id="urlList" class="list"></ul>
       <p id="urlEmpty" class="empty">Belum ada URL yang diblokir.</p>
       <div id="urlPager" class="pager"></div>
@@ -80,6 +92,10 @@
       <p class="tab-hint tab-hint--keyword">
         URL yang mengandung kata ini akan ditutup, meski domain ada di whitelist.
       </p>
+      <div class="list-header">
+        <span class="list-header__label">Kata kunci</span>
+        <span class="list-header__hits">Deteksi</span>
+      </div>
       <form id="keywordForm" class="keyword-form">
         <input
           id="keywordInput"
@@ -99,6 +115,10 @@
       <p class="tab-hint">
         Domain di whitelist tidak akan ditutup, kecuali URL mengandung kata kunci blokir.
       </p>
+      <div class="list-header">
+        <span class="list-header__label">Domain</span>
+        <span class="list-header__hits">Deteksi</span>
+      </div>
       <ul id="whitelistList" class="list"></ul>
       <p id="whitelistEmpty" class="empty">Belum ada domain di whitelist.</p>
       <div id="whitelistPager" class="pager"></div>
