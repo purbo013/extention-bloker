@@ -42,8 +42,16 @@ body {
 }
 
 .section--pending {
-  max-height: 180px;
-  overflow-y: auto;
+  overflow: visible;
+}
+
+#pendingList.pending-list--filled {
+  min-height: 265px;
+}
+
+.list-item--pending {
+  min-height: 53px;
+  align-items: center;
 }
 
 .section__header {

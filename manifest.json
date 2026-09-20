@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Tab Blocker",
   "description": "Blokir dan tutup tab otomatis berdasarkan daftar URL terdaftar",
-  "version": "1.4.0",
+  "version": "1.5.1",
   "permissions": ["tabs", "storage", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "background": {

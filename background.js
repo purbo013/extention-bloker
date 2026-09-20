@@ -3,7 +3,12 @@ const WHITELIST_KEY = "whitelistDomains";
 const KEYWORD_KEY = "blockedKeywords";
 const PENDING_KEY = "pendingUrls";
 const DEFAULT_MODE_KEY = "defaultBlockMode";
-const MAX_PENDING = 30;
+
+const MAX_PENDING = 50;
+const MAX_LIST_SIZE = 1000;
+const TAB_CHECK_COOLDOWN_MS = 800;
+const PERSIST_DELAY_MS = 1500;
+const TAB_CHECK_CACHE_LIMIT = 200;
 
 const SYSTEM_URL_PREFIXES = [
   "chrome://",
@@ -12,6 +17,20 @@ const SYSTEM_URL_PREFIXES = [
   "about:",
   "devtools://",
 ];
+
+const cache = {
+  blocked: [],
+  whitelist: [],
+  keywords: [],
+  pending: [],
+  indexes: null,
+  loaded: false,
+  dirty: false,
+};
+
+let persistTimer = null;
+let cachePromise = null;
+const tabCheckCache = new Map();
 
 function isSystemUrl(url) {
   if (!url) return true;
@@ -42,22 +61,15 @@ function toDomainUrl(url) {
   }
 }
 
-async function getDefaultBlockMode() {
-  const result = await chrome.storage.local.get(DEFAULT_MODE_KEY);
-  return result[DEFAULT_MODE_KEY] || "domain";
-}
-
-async function setDefaultBlockMode(mode) {
-  await chrome.storage.local.set({ [DEFAULT_MODE_KEY]: mode });
+function normalizeKeyword(keyword) {
+  return keyword.trim().toLowerCase();
 }
 
 function migrateBlocked(data) {
-  if (!data.length) return [];
-
+  if (!data?.length) return [];
   if (typeof data[0] === "string") {
     return data.map((url) => ({ url, mode: "full", hits: 0 }));
   }
-
   return data.map((entry) => ({
     url: entry.url,
     mode: entry.mode || "full",
@@ -66,181 +78,234 @@ function migrateBlocked(data) {
 }
 
 function migrateWhitelist(data) {
-  if (!data.length) return [];
-
+  if (!data?.length) return [];
   if (typeof data[0] === "string") {
     return data.map((url) => ({ url, hits: 0 }));
   }
-
-  return data.map((entry) => ({
-    url: entry.url,
-    hits: entry.hits || 0,
-  }));
+  return data.map((entry) => ({ url: entry.url, hits: entry.hits || 0 }));
 }
 
 function migrateKeywords(data) {
-  if (!data.length) return [];
-
+  if (!data?.length) return [];
   if (typeof data[0] === "string") {
     return data.map((keyword) => ({ keyword, hits: 0 }));
   }
-
-  return data.map((entry) => ({
-    keyword: entry.keyword,
-    hits: entry.hits || 0,
-  }));
+  return data.map((entry) => ({ keyword: entry.keyword, hits: entry.hits || 0 }));
 }
 
-async function getBlockedUrls() {
-  const result = await chrome.storage.local.get(STORAGE_KEY);
-  const migrated = migrateBlocked(result[STORAGE_KEY] || []);
-
-  if (JSON.stringify(result[STORAGE_KEY]) !== JSON.stringify(migrated)) {
-    await chrome.storage.local.set({ [STORAGE_KEY]: migrated });
-  }
-
-  return migrated;
-}
-
-async function getWhitelistDomains() {
-  const result = await chrome.storage.local.get(WHITELIST_KEY);
-  const migrated = migrateWhitelist(result[WHITELIST_KEY] || []);
-
-  if (JSON.stringify(result[WHITELIST_KEY]) !== JSON.stringify(migrated)) {
-    await chrome.storage.local.set({ [WHITELIST_KEY]: migrated });
-  }
-
-  return migrated;
-}
-
-async function getBlockedKeywords() {
-  const result = await chrome.storage.local.get(KEYWORD_KEY);
-  const migrated = migrateKeywords(result[KEYWORD_KEY] || []);
-
-  if (JSON.stringify(result[KEYWORD_KEY]) !== JSON.stringify(migrated)) {
-    await chrome.storage.local.set({ [KEYWORD_KEY]: migrated });
-  }
-
-  return migrated;
-}
-
-function normalizeKeyword(keyword) {
-  return keyword.trim().toLowerCase();
-}
-
-function findMatchingKeywords(tabUrl, keywords) {
-  const haystack = normalizeUrl(tabUrl).toLowerCase();
-  return keywords.filter((entry) => haystack.includes(entry.keyword));
-}
-
-function matchesKeyword(tabUrl, keywords) {
-  return findMatchingKeywords(tabUrl, keywords).length > 0;
-}
-
-async function getPendingUrls() {
-  const result = await chrome.storage.local.get(PENDING_KEY);
-  const pending = (result[PENDING_KEY] || []).map((item) => ({
+function normalizePending(data) {
+  return (data || []).map((item) => ({
     url: item.url,
     timestamp: item.timestamp || Date.now(),
     hits: item.hits || 0,
   }));
-  const whitelist = await getWhitelistDomains();
-  const filtered = pending.filter((item) => !isWhitelisted(item.url, whitelist));
+}
 
-  if (filtered.length !== pending.length) {
-    await chrome.storage.local.set({ [PENDING_KEY]: filtered });
+function buildIndexes() {
+  const whitelistDomains = new Set(cache.whitelist.map((entry) => entry.url));
+  const domainBlocks = new Map();
+  const fullBlocks = new Map();
+
+  for (const entry of cache.blocked) {
+    const key = `${entry.mode}:${entry.url}`;
+    if (entry.mode === "domain") {
+      domainBlocks.set(entry.url, entry);
+    } else {
+      fullBlocks.set(entry.url, entry);
+    }
   }
 
-  return filtered;
+  cache.indexes = { whitelistDomains, domainBlocks, fullBlocks };
+}
+
+function markDirty() {
+  cache.dirty = true;
+  schedulePersist();
+}
+
+function schedulePersist() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    flushCache();
+  }, PERSIST_DELAY_MS);
+}
+
+async function flushCache() {
+  if (!cache.loaded || !cache.dirty) return;
+
+  cache.dirty = false;
+  await chrome.storage.local.set({
+    [STORAGE_KEY]: cache.blocked,
+    [WHITELIST_KEY]: cache.whitelist,
+    [KEYWORD_KEY]: cache.keywords,
+    [PENDING_KEY]: cache.pending,
+  });
+}
+
+async function persistNow() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  cache.dirty = true;
+  await flushCache();
+}
+
+async function loadCacheInternal() {
+  const result = await chrome.storage.local.get([
+    STORAGE_KEY,
+    WHITELIST_KEY,
+    KEYWORD_KEY,
+    PENDING_KEY,
+  ]);
+
+  cache.blocked = migrateBlocked(result[STORAGE_KEY]);
+  cache.whitelist = migrateWhitelist(result[WHITELIST_KEY]);
+  cache.keywords = migrateKeywords(result[KEYWORD_KEY]);
+  cache.pending = normalizePending(result[PENDING_KEY]);
+  cache.pending = sanitizePending(cache.pending);
+  cache.loaded = true;
+  buildIndexes();
+
+  const needsPersist =
+    JSON.stringify(result[STORAGE_KEY]) !== JSON.stringify(cache.blocked) ||
+    JSON.stringify(result[WHITELIST_KEY]) !== JSON.stringify(cache.whitelist) ||
+    JSON.stringify(result[KEYWORD_KEY]) !== JSON.stringify(cache.keywords) ||
+    JSON.stringify(result[PENDING_KEY]) !== JSON.stringify(cache.pending);
+
+  if (needsPersist) {
+    markDirty();
+  }
+}
+
+async function ensureCache() {
+  if (cache.loaded) return;
+
+  if (!cachePromise) {
+    cachePromise = loadCacheInternal().finally(() => {
+      cachePromise = null;
+    });
+  }
+
+  await cachePromise;
+}
+
+function sanitizePending(pending) {
+  const whitelistDomains = new Set(cache.whitelist.map((entry) => entry.url));
+  return pending.filter((item) => !whitelistDomains.has(toDomainUrl(item.url)));
+}
+
+function shouldSkipTabCheck(tabId, url) {
+  const normalized = normalizeUrl(url);
+  const key = `${tabId}:${normalized}`;
+  const now = Date.now();
+  const lastAt = tabCheckCache.get(key);
+
+  if (lastAt && now - lastAt < TAB_CHECK_COOLDOWN_MS) {
+    return true;
+  }
+
+  tabCheckCache.set(key, now);
+
+  if (tabCheckCache.size > TAB_CHECK_CACHE_LIMIT) {
+    const cutoff = now - TAB_CHECK_COOLDOWN_MS * 2;
+    for (const [entryKey, entryAt] of tabCheckCache) {
+      if (entryAt < cutoff) tabCheckCache.delete(entryKey);
+    }
+  }
+
+  return false;
+}
+
+function findMatchingKeywords(tabUrl) {
+  const haystack = normalizeUrl(tabUrl).toLowerCase();
+  const matches = [];
+
+  for (const entry of cache.keywords) {
+    if (haystack.includes(entry.keyword)) {
+      matches.push(entry);
+    }
+  }
+
+  return matches;
+}
+
+function findMatchingBlockedEntry(tabUrl) {
+  const normalized = normalizeUrl(tabUrl);
+  const domain = toDomainUrl(tabUrl);
+  const { domainBlocks, fullBlocks } = cache.indexes;
+
+  if (domainBlocks.has(domain)) {
+    return domainBlocks.get(domain);
+  }
+
+  if (fullBlocks.has(normalized)) {
+    return fullBlocks.get(normalized);
+  }
+
+  return null;
+}
+
+function isWhitelisted(tabUrl) {
+  if (isSystemUrl(tabUrl)) return true;
+  return cache.indexes.whitelistDomains.has(toDomainUrl(tabUrl));
+}
+
+function isBlocked(tabUrl) {
+  if (isSystemUrl(tabUrl)) return false;
+  if (findMatchingKeywords(tabUrl).length > 0) return true;
+  if (isWhitelisted(tabUrl)) return false;
+  return Boolean(findMatchingBlockedEntry(tabUrl));
+}
+
+function incrementHit(entry) {
+  entry.hits = (entry.hits || 0) + 1;
+  markDirty();
+}
+
+function recordBlockHits(url) {
+  const matchingKeywords = findMatchingKeywords(url);
+  if (matchingKeywords.length) {
+    for (const entry of matchingKeywords) {
+      incrementHit(entry);
+    }
+    return;
+  }
+
+  const matchingEntry = findMatchingBlockedEntry(url);
+  if (matchingEntry) {
+    incrementHit(matchingEntry);
+  }
+}
+
+function getPendingHits(url) {
+  const normalized = normalizeUrl(url);
+  const item = cache.pending.find((entry) => entry.url === normalized);
+  return item?.hits || 0;
+}
+
+async function getDefaultBlockMode() {
+  await ensureCache();
+  const result = await chrome.storage.local.get(DEFAULT_MODE_KEY);
+  return result[DEFAULT_MODE_KEY] || "domain";
+}
+
+async function setDefaultBlockMode(mode) {
+  await chrome.storage.local.set({ [DEFAULT_MODE_KEY]: mode });
 }
 
 function entryValue(url, mode) {
   return mode === "domain" ? toDomainUrl(url) : normalizeUrl(url);
 }
 
-function matchesEntry(tabUrl, entry) {
-  const normalized = normalizeUrl(tabUrl);
-
-  if (entry.mode === "domain") {
-    return toDomainUrl(tabUrl) === entry.url;
-  }
-
-  return normalized === entry.url;
-}
-
-function findMatchingBlockedEntry(tabUrl, blockedList) {
-  return blockedList.find((entry) => matchesEntry(tabUrl, entry));
-}
-
-function isWhitelisted(tabUrl, whitelist) {
-  if (isSystemUrl(tabUrl)) return true;
-  const domain = toDomainUrl(tabUrl);
-  return whitelist.some((entry) => entry.url === domain);
-}
-
-function isBlocked(tabUrl, blockedList, whitelist, keywords) {
-  if (isSystemUrl(tabUrl)) return false;
-  if (matchesKeyword(tabUrl, keywords)) return true;
-  if (isWhitelisted(tabUrl, whitelist)) return false;
-  return blockedList.some((entry) => matchesEntry(tabUrl, entry));
-}
-
-async function incrementBlockedHit(url, mode) {
-  const blockedUrls = await getBlockedUrls();
-  const entry = blockedUrls.find((item) => item.url === url && item.mode === mode);
-  if (!entry) return;
-
-  entry.hits = (entry.hits || 0) + 1;
-  await chrome.storage.local.set({ [STORAGE_KEY]: blockedUrls });
-}
-
-async function incrementKeywordHit(keyword) {
-  const keywords = await getBlockedKeywords();
-  const entry = keywords.find((item) => item.keyword === keyword);
-  if (!entry) return;
-
-  entry.hits = (entry.hits || 0) + 1;
-  await chrome.storage.local.set({ [KEYWORD_KEY]: keywords });
-}
-
-async function incrementWhitelistHit(domain) {
-  const whitelist = await getWhitelistDomains();
-  const entry = whitelist.find((item) => item.url === domain);
-  if (!entry) return;
-
-  entry.hits = (entry.hits || 0) + 1;
-  await chrome.storage.local.set({ [WHITELIST_KEY]: whitelist });
-}
-
-async function recordBlockHits(url, blockedList, keywords) {
-  const matchingKeywords = findMatchingKeywords(url, keywords);
-  if (matchingKeywords.length) {
-    for (const entry of matchingKeywords) {
-      await incrementKeywordHit(entry.keyword);
-    }
-    return;
-  }
-
-  const matchingEntry = findMatchingBlockedEntry(url, blockedList);
-  if (matchingEntry) {
-    await incrementBlockedHit(matchingEntry.url, matchingEntry.mode);
-  }
-}
-
-async function getPendingHits(url) {
-  const normalized = normalizeUrl(url);
-  const pending = await getPendingUrls();
-  const item = pending.find((entry) => entry.url === normalized);
-  return item?.hits || 0;
-}
-
 async function addBlockedUrl(url, mode) {
+  await ensureCache();
   const blockMode = mode || (await getDefaultBlockMode());
   const value = entryValue(url, blockMode);
-  const blockedUrls = await getBlockedUrls();
-  const inheritedHits = await getPendingHits(url);
+  const inheritedHits = getPendingHits(url);
 
-  const existing = blockedUrls.find(
+  const existing = cache.blocked.find(
     (entry) => entry.url === value && entry.mode === blockMode
   );
 
@@ -248,64 +313,80 @@ async function addBlockedUrl(url, mode) {
     return { added: false, url: value, mode: blockMode, hits: existing.hits || 0 };
   }
 
-  blockedUrls.push({ url: value, mode: blockMode, hits: inheritedHits });
-  await chrome.storage.local.set({ [STORAGE_KEY]: blockedUrls });
-  await removePendingUrl(url);
+  if (cache.blocked.length >= MAX_LIST_SIZE) {
+    return { added: false, error: "limit", url: value, mode: blockMode };
+  }
+
+  cache.blocked.push({ url: value, mode: blockMode, hits: inheritedHits });
+  buildIndexes();
+  removePendingUrl(url, false);
+  await persistNow();
   return { added: true, url: value, mode: blockMode, hits: inheritedHits };
 }
 
 async function removeBlockedUrl(url, mode) {
-  const blockedUrls = await getBlockedUrls();
-  const filtered = blockedUrls.filter(
+  await ensureCache();
+  cache.blocked = cache.blocked.filter(
     (entry) => !(entry.url === url && entry.mode === mode)
   );
-  await chrome.storage.local.set({ [STORAGE_KEY]: filtered });
+  buildIndexes();
+  await persistNow();
 }
 
 async function addWhitelistDomain(url) {
+  await ensureCache();
   const domain = toDomainUrl(url);
-  const whitelist = await getWhitelistDomains();
-  const inheritedHits = await getPendingHits(url);
+  const inheritedHits = getPendingHits(url);
+  const existing = cache.whitelist.find((entry) => entry.url === domain);
 
-  const existing = whitelist.find((entry) => entry.url === domain);
   if (existing) {
     return { added: false, url: domain, hits: existing.hits || 0 };
   }
 
-  whitelist.push({ url: domain, hits: inheritedHits });
-  await chrome.storage.local.set({ [WHITELIST_KEY]: whitelist });
-  await removePendingByDomain(domain);
+  if (cache.whitelist.length >= MAX_LIST_SIZE) {
+    return { added: false, error: "limit", url: domain };
+  }
+
+  cache.whitelist.push({ url: domain, hits: inheritedHits });
+  buildIndexes();
+  removePendingByDomain(domain, false);
+  await persistNow();
   return { added: true, url: domain, hits: inheritedHits };
 }
 
 async function removeWhitelistDomain(domain) {
-  const whitelist = await getWhitelistDomains();
-  const filtered = whitelist.filter((item) => item.url !== domain);
-  await chrome.storage.local.set({ [WHITELIST_KEY]: filtered });
+  await ensureCache();
+  cache.whitelist = cache.whitelist.filter((item) => item.url !== domain);
+  buildIndexes();
+  await persistNow();
 }
 
 async function addBlockedKeyword(keyword) {
+  await ensureCache();
   const normalized = normalizeKeyword(keyword);
   if (!normalized) {
     return { added: false, keyword: normalized, hits: 0 };
   }
 
-  const keywords = await getBlockedKeywords();
-  const existing = keywords.find((entry) => entry.keyword === normalized);
+  const existing = cache.keywords.find((entry) => entry.keyword === normalized);
   if (existing) {
     return { added: false, keyword: normalized, hits: existing.hits || 0 };
   }
 
-  keywords.push({ keyword: normalized, hits: 0 });
-  await chrome.storage.local.set({ [KEYWORD_KEY]: keywords });
+  if (cache.keywords.length >= MAX_LIST_SIZE) {
+    return { added: false, error: "limit", keyword: normalized, hits: 0 };
+  }
+
+  cache.keywords.push({ keyword: normalized, hits: 0 });
+  await persistNow();
   return { added: true, keyword: normalized, hits: 0 };
 }
 
 async function removeBlockedKeyword(keyword) {
+  await ensureCache();
   const normalized = normalizeKeyword(keyword);
-  const keywords = await getBlockedKeywords();
-  const filtered = keywords.filter((item) => item.keyword !== normalized);
-  await chrome.storage.local.set({ [KEYWORD_KEY]: filtered });
+  cache.keywords = cache.keywords.filter((item) => item.keyword !== normalized);
+  await persistNow();
 }
 
 function suggestKeywordFromUrl(url) {
@@ -321,69 +402,67 @@ function suggestKeywordFromUrl(url) {
   return "";
 }
 
-async function capturePendingUrl(url) {
+function capturePendingUrl(url) {
   if (!url || isSystemUrl(url)) return;
+  if (isBlocked(url)) return;
 
-  const whitelist = await getWhitelistDomains();
-  const keywords = await getBlockedKeywords();
-  const blockedUrls = await getBlockedUrls();
-
-  if (isBlocked(url, blockedUrls, whitelist, keywords)) return;
-
-  if (isWhitelisted(url, whitelist)) {
-    await incrementWhitelistHit(toDomainUrl(url));
+  if (isWhitelisted(url)) {
+    const domain = toDomainUrl(url);
+    const entry = cache.whitelist.find((item) => item.url === domain);
+    if (entry) incrementHit(entry);
     return;
   }
 
   const normalized = normalizeUrl(url);
-  const pending = await getPendingUrls();
-  const existing = pending.find((item) => item.url === normalized);
+  const existing = cache.pending.find((item) => item.url === normalized);
 
   if (existing) {
     existing.hits = (existing.hits || 0) + 1;
     existing.timestamp = Date.now();
-    const filtered = pending.filter((item) => item.url !== normalized);
-    filtered.unshift(existing);
-    await chrome.storage.local.set({
-      [PENDING_KEY]: filtered.slice(0, MAX_PENDING),
-    });
+    cache.pending = [
+      existing,
+      ...cache.pending.filter((item) => item.url !== normalized),
+    ].slice(0, MAX_PENDING);
+    markDirty();
     return;
   }
 
-  const filtered = pending.filter((item) => item.url !== normalized);
-  filtered.unshift({ url: normalized, timestamp: Date.now(), hits: 1 });
-
-  await chrome.storage.local.set({
-    [PENDING_KEY]: filtered.slice(0, MAX_PENDING),
-  });
+  cache.pending = [
+    { url: normalized, timestamp: Date.now(), hits: 1 },
+    ...cache.pending.filter((item) => item.url !== normalized),
+  ].slice(0, MAX_PENDING);
+  markDirty();
 }
 
-async function removePendingUrl(url) {
+function removePendingUrl(url, persist = true) {
   const normalized = normalizeUrl(url);
-  const pending = await getPendingUrls();
-  const filtered = pending.filter((item) => item.url !== normalized);
-  await chrome.storage.local.set({ [PENDING_KEY]: filtered });
+  cache.pending = cache.pending.filter((item) => item.url !== normalized);
+  if (persist) {
+    markDirty();
+  }
 }
 
-async function removePendingByDomain(domain) {
-  const pending = await getPendingUrls();
-  const filtered = pending.filter((item) => toDomainUrl(item.url) !== domain);
-  await chrome.storage.local.set({ [PENDING_KEY]: filtered });
+function removePendingByDomain(domain, persist = true) {
+  cache.pending = cache.pending.filter((item) => toDomainUrl(item.url) !== domain);
+  if (persist) {
+    markDirty();
+  }
 }
 
 async function clearPendingUrls() {
-  await chrome.storage.local.set({ [PENDING_KEY]: [] });
+  await ensureCache();
+  cache.pending = [];
+  await persistNow();
 }
 
 async function checkAndCloseTab(tabId, url) {
   if (!url || isSystemUrl(url)) return;
+  if (shouldSkipTabCheck(tabId, url)) return;
 
-  const blockedUrls = await getBlockedUrls();
-  const whitelist = await getWhitelistDomains();
-  const keywords = await getBlockedKeywords();
+  await ensureCache();
 
-  if (isBlocked(url, blockedUrls, whitelist, keywords)) {
-    await recordBlockHits(url, blockedUrls, keywords);
+  if (isBlocked(url)) {
+    recordBlockHits(url);
     try {
       await chrome.tabs.remove(tabId);
     } catch {
@@ -392,7 +471,49 @@ async function checkAndCloseTab(tabId, url) {
     return;
   }
 
-  await capturePendingUrl(url);
+  capturePendingUrl(url);
+}
+
+function getSummary() {
+  const domainCount = cache.blocked.filter((entry) => entry.mode === "domain").length;
+  const urlCount = cache.blocked.filter((entry) => entry.mode === "full").length;
+
+  return {
+    domainCount,
+    urlCount,
+    keywordCount: cache.keywords.length,
+    whitelistCount: cache.whitelist.length,
+    pendingCount: cache.pending.length,
+  };
+}
+
+function getPaginatedList(type, page = 1, pageSize = 8) {
+  let items = [];
+
+  if (type === "domain") {
+    items = cache.blocked.filter((entry) => entry.mode === "domain");
+  } else if (type === "full") {
+    items = cache.blocked.filter((entry) => entry.mode === "full");
+  } else if (type === "keyword") {
+    items = cache.keywords;
+  } else if (type === "whitelist") {
+    items = cache.whitelist;
+  } else if (type === "pending") {
+    items = cache.pending;
+  }
+
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(page, 1), totalPages);
+  const start = (currentPage - 1) * pageSize;
+
+  return {
+    items: items.slice(start, start + pageSize),
+    total,
+    page: currentPage,
+    totalPages,
+    pageSize,
+  };
 }
 
 function setupContextMenus() {
@@ -402,31 +523,26 @@ function setupContextMenus() {
       title: "Blokir domain ini",
       contexts: ["page"],
     });
-
     chrome.contextMenus.create({
       id: "block-page-url",
       title: "Blokir URL ini",
       contexts: ["page"],
     });
-
     chrome.contextMenus.create({
       id: "whitelist-page-domain",
       title: "Whitelist domain ini",
       contexts: ["page"],
     });
-
     chrome.contextMenus.create({
       id: "block-link-url",
       title: "Blokir URL link ini",
       contexts: ["link"],
     });
-
     chrome.contextMenus.create({
       id: "whitelist-link-domain",
       title: "Whitelist domain link ini",
       contexts: ["link"],
     });
-
     chrome.contextMenus.create({
       id: "block-selection-keyword",
       title: "Blokir kata terpilih",
@@ -435,12 +551,22 @@ function setupContextMenus() {
   });
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
   setupContextMenus();
+  await ensureCache();
 });
 
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
   setupContextMenus();
+  await ensureCache();
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const key of tabCheckCache.keys()) {
+    if (key.startsWith(`${tabId}:`)) {
+      tabCheckCache.delete(key);
+    }
+  }
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -460,11 +586,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     return;
   }
 
-  const updatedBlocked = await getBlockedUrls();
-  const updatedWhitelist = await getWhitelistDomains();
-  const updatedKeywords = await getBlockedKeywords();
-
-  if (tab?.id && tab.url && isBlocked(tab.url, updatedBlocked, updatedWhitelist, updatedKeywords)) {
+  await ensureCache();
+  if (tab?.id && tab.url && isBlocked(tab.url)) {
     try {
       await chrome.tabs.remove(tab.id);
     } catch {
@@ -482,7 +605,7 @@ chrome.tabs.onCreated.addListener((tab) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== "loading" && changeInfo.status !== "complete") return;
+  if (changeInfo.status !== "complete") return;
 
   const url = changeInfo.url || tab.url || tab.pendingUrl;
   if (url) {
@@ -491,106 +614,74 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.action === "addBlocked") {
-    addBlockedUrl(message.url, message.mode).then(async (result) => {
-      if (_sender.tab?.id && _sender.tab.url) {
-        const blockedUrls = await getBlockedUrls();
-        const whitelist = await getWhitelistDomains();
-        const keywords = await getBlockedKeywords();
-        if (isBlocked(_sender.tab.url, blockedUrls, whitelist, keywords)) {
+  const handle = async () => {
+    await ensureCache();
+
+    switch (message.action) {
+      case "getSummary":
+        return getSummary();
+
+      case "getList":
+        return getPaginatedList(message.type, message.page, message.pageSize);
+
+      case "addBlocked": {
+        const result = await addBlockedUrl(message.url, message.mode);
+        if (_sender.tab?.id && _sender.tab.url && isBlocked(_sender.tab.url)) {
           chrome.tabs.remove(_sender.tab.id).catch(() => {});
         }
+        return result;
       }
-      sendResponse(result);
-    });
-    return true;
-  }
 
-  if (message.action === "addKeyword") {
-    addBlockedKeyword(message.keyword).then(async (result) => {
-      if (_sender.tab?.id && _sender.tab.url) {
-        const blockedUrls = await getBlockedUrls();
-        const whitelist = await getWhitelistDomains();
-        const keywords = await getBlockedKeywords();
-        if (isBlocked(_sender.tab.url, blockedUrls, whitelist, keywords)) {
+      case "addKeyword": {
+        const result = await addBlockedKeyword(message.keyword);
+        if (_sender.tab?.id && _sender.tab.url && isBlocked(_sender.tab.url)) {
           chrome.tabs.remove(_sender.tab.id).catch(() => {});
         }
+        return result;
       }
-      sendResponse(result);
-    });
-    return true;
-  }
 
-  if (message.action === "getKeywords") {
-    getBlockedKeywords().then((keywords) => sendResponse({ keywords }));
-    return true;
-  }
+      case "removeBlocked":
+        await removeBlockedUrl(message.url, message.mode);
+        return { success: true };
 
-  if (message.action === "removeKeyword") {
-    removeBlockedKeyword(message.keyword).then(() =>
-      sendResponse({ success: true })
-    );
-    return true;
-  }
+      case "addWhitelist":
+        return addWhitelistDomain(message.url);
 
-  if (message.action === "suggestKeyword") {
-    sendResponse({ keyword: suggestKeywordFromUrl(message.url) });
-    return false;
-  }
+      case "removeWhitelist":
+        await removeWhitelistDomain(message.url);
+        return { success: true };
 
-  if (message.action === "getBlocked") {
-    getBlockedUrls().then((urls) => sendResponse({ urls }));
-    return true;
-  }
+      case "removeKeyword":
+        await removeBlockedKeyword(message.keyword);
+        return { success: true };
 
-  if (message.action === "removeBlocked") {
-    removeBlockedUrl(message.url, message.mode).then(() =>
-      sendResponse({ success: true })
-    );
-    return true;
-  }
+      case "removePending":
+        removePendingUrl(message.url);
+        await persistNow();
+        return { success: true };
 
-  if (message.action === "addWhitelist") {
-    addWhitelistDomain(message.url).then((result) => sendResponse(result));
-    return true;
-  }
+      case "clearPending":
+        await clearPendingUrls();
+        return { success: true };
 
-  if (message.action === "getWhitelist") {
-    getWhitelistDomains().then((urls) => sendResponse({ urls }));
-    return true;
-  }
+      case "suggestKeyword":
+        return { keyword: suggestKeywordFromUrl(message.url) };
 
-  if (message.action === "removeWhitelist") {
-    removeWhitelistDomain(message.url).then(() =>
-      sendResponse({ success: true })
-    );
-    return true;
-  }
+      case "getDefaultMode":
+        return { mode: await getDefaultBlockMode() };
 
-  if (message.action === "getPending") {
-    getPendingUrls().then((urls) => sendResponse({ urls }));
-    return true;
-  }
+      case "setDefaultMode":
+        await setDefaultBlockMode(message.mode);
+        return { success: true };
 
-  if (message.action === "removePending") {
-    removePendingUrl(message.url).then(() => sendResponse({ success: true }));
-    return true;
-  }
+      default:
+        return null;
+    }
+  };
 
-  if (message.action === "clearPending") {
-    clearPendingUrls().then(() => sendResponse({ success: true }));
-    return true;
-  }
+  handle()
+    .then((response) => sendResponse(response))
+    .catch(() => sendResponse(null));
 
-  if (message.action === "getDefaultMode") {
-    getDefaultBlockMode().then((mode) => sendResponse({ mode }));
-    return true;
-  }
-
-  if (message.action === "setDefaultMode") {
-    setDefaultBlockMode(message.mode).then(() =>
-      sendResponse({ success: true })
-    );
-    return true;
-  }
+  return true;
 });
