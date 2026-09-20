@@ -51,20 +51,20 @@ Setiap tab baru yang dibuka (dan belum diblokir) otomatis masuk ke daftar ini.
 |--------|--------|
 | **Domain** | Daftarkan domain halaman ke blokir domain |
 | **URL** | Daftarkan URL penuh ke blokir URL |
-| **White** | Daftarkan domain ke whitelist |
+| **Allow** | Daftarkan domain ke whitelist |
 | **×** | Abaikan / hapus dari penampung |
 
 - Maksimal **5 baris** per halaman (tanpa scroll)
 - Gunakan pager **‹ ›** jika URL terdeteksi lebih banyak
 
-#### Tab Domain / URL / Kata / White
+#### Tab Domain / URL / Kata / Allow
 
 | Tab | Deskripsi |
 |-----|-----------|
 | **Domain** | Daftar domain yang diblokir seluruhnya |
 | **URL** | Daftar URL spesifik yang diblokir |
 | **Kata** | Daftar kata kunci dalam URL yang diblokir |
-| **White** | Daftar domain yang diizinkan |
+| **Allow** | Daftar domain yang diizinkan |
 
 Setiap tab menampilkan kolom **Deteksi** (berapa kali terdeteksi) dan tombol hapus (icon tempat sampah).
 

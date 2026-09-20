@@ -264,7 +264,7 @@ async function renderPendingList() {
       })
     );
     actions.appendChild(
-      createActionButton("White", "btn--whitelist", async () => {
+      createActionButton("Allow", "btn--whitelist", async () => {
         await sendMessage({ action: "addWhitelist", url: entry.url });
         await refreshAll();
       })
@@ -402,5 +402,10 @@ elements.keywordForm.addEventListener("submit", async (event) => {
   elements.keywordInput.value = "";
   await refreshAll();
 });
+
+const appVersionEl = document.getElementById("appVersion");
+if (appVersionEl) {
+  appVersionEl.textContent = `v${chrome.runtime.getManifest().version}`;
+}
 
 renderActiveViews();

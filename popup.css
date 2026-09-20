@@ -402,3 +402,62 @@ body {
   min-width: 100px;
   text-align: center;
 }
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid #e0e0e0;
+  background: #fff;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+}
+
+.footer__left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.footer__label {
+  font-size: 11px;
+  color: #9e9e9e;
+}
+
+.footer__author {
+  font-size: 12px;
+  font-weight: 600;
+  color: #424242;
+  text-decoration: none;
+}
+
+.footer__author:hover {
+  color: #e53935;
+  text-decoration: underline;
+}
+
+.footer__sep {
+  font-size: 11px;
+  color: #bdbdbd;
+}
+
+.footer__link {
+  font-size: 12px;
+  font-weight: 500;
+  color: #e53935;
+  text-decoration: none;
+}
+
+.footer__link:hover {
+  text-decoration: underline;
+}
+
+.footer__version {
+  font-size: 11px;
+  color: #9e9e9e;
+  font-variant-numeric: tabular-nums;
+}
