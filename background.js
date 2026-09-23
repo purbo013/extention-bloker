@@ -8,7 +8,9 @@ const MAX_PENDING = 50;
 const MAX_LIST_SIZE = 1000;
 const TAB_CHECK_COOLDOWN_MS = 800;
 const PERSIST_DELAY_MS = 1500;
+const PERSIST_ALARM = "persist-cache";
 const TAB_CHECK_CACHE_LIMIT = 200;
+const TAB_URL_TRACKER_LIMIT = 300;
 
 const SYSTEM_URL_PREFIXES = [
   "chrome://",
@@ -28,9 +30,9 @@ const cache = {
   dirty: false,
 };
 
-let persistTimer = null;
 let cachePromise = null;
 const tabCheckCache = new Map();
+const tabLastUrl = new Map();
 
 function isSystemUrl(url) {
   if (!url) return true;
@@ -124,32 +126,52 @@ function markDirty() {
 }
 
 function schedulePersist() {
-  if (persistTimer) return;
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    flushCache();
-  }, PERSIST_DELAY_MS);
+  chrome.alarms.create(PERSIST_ALARM, { when: Date.now() + PERSIST_DELAY_MS });
+}
+
+function cancelScheduledPersist() {
+  chrome.alarms.clear(PERSIST_ALARM);
 }
 
 async function flushCache() {
   if (!cache.loaded || !cache.dirty) return;
 
-  cache.dirty = false;
-  await chrome.storage.local.set({
+  try {
+    await chrome.storage.local.set({
+      [STORAGE_KEY]: cache.blocked,
+      [WHITELIST_KEY]: cache.whitelist,
+      [KEYWORD_KEY]: cache.keywords,
+      [PENDING_KEY]: cache.pending,
+    });
+    cache.dirty = false;
+  } catch {
+    cache.dirty = true;
+    schedulePersist();
+  }
+}
+
+async function persistNow() {
+  cancelScheduledPersist();
+  cache.dirty = true;
+  await flushCache();
+}
+
+function persistOnSuspend() {
+  if (!cache.loaded || !cache.dirty) return;
+
+  const payload = {
     [STORAGE_KEY]: cache.blocked,
     [WHITELIST_KEY]: cache.whitelist,
     [KEYWORD_KEY]: cache.keywords,
     [PENDING_KEY]: cache.pending,
-  });
-}
+  };
 
-async function persistNow() {
-  if (persistTimer) {
-    clearTimeout(persistTimer);
-    persistTimer = null;
-  }
-  cache.dirty = true;
-  await flushCache();
+  cache.dirty = false;
+  chrome.storage.local.set(payload, () => {
+    if (chrome.runtime.lastError) {
+      cache.dirty = true;
+    }
+  });
 }
 
 async function loadCacheInternal() {
@@ -196,7 +218,32 @@ function sanitizePending(pending) {
   return pending.filter((item) => !whitelistDomains.has(toDomainUrl(item.url)));
 }
 
-function shouldSkipTabCheck(tabId, url) {
+function trackTabUrl(tabId, url) {
+  if (!tabId || !url || isSystemUrl(url)) return;
+
+  tabLastUrl.set(tabId, url);
+
+  if (tabLastUrl.size > TAB_URL_TRACKER_LIMIT) {
+    const oldestKey = tabLastUrl.keys().next().value;
+    if (oldestKey !== undefined) {
+      tabLastUrl.delete(oldestKey);
+    }
+  }
+}
+
+function clearTabTracking(tabId) {
+  tabLastUrl.delete(tabId);
+
+  for (const key of tabCheckCache.keys()) {
+    if (key.startsWith(`${tabId}:`)) {
+      tabCheckCache.delete(key);
+    }
+  }
+}
+
+function shouldSkipTabCheck(tabId, url, { force = false } = {}) {
+  if (force) return false;
+
   const normalized = normalizeUrl(url);
   const key = `${tabId}:${normalized}`;
   const now = Date.now();
@@ -431,7 +478,7 @@ function capturePendingUrl(url) {
     { url: normalized, timestamp: Date.now(), hits: 1 },
     ...cache.pending.filter((item) => item.url !== normalized),
   ].slice(0, MAX_PENDING);
-  markDirty();
+  persistNow().catch(() => {});
 }
 
 function removePendingUrl(url, persist = true) {
@@ -455,9 +502,11 @@ async function clearPendingUrls() {
   await persistNow();
 }
 
-async function checkAndCloseTab(tabId, url) {
+async function checkAndCloseTab(tabId, url, options = {}) {
   if (!url || isSystemUrl(url)) return;
-  if (shouldSkipTabCheck(tabId, url)) return;
+
+  trackTabUrl(tabId, url);
+  if (shouldSkipTabCheck(tabId, url, options)) return;
 
   await ensureCache();
 
@@ -472,6 +521,21 @@ async function checkAndCloseTab(tabId, url) {
   }
 
   capturePendingUrl(url);
+}
+
+async function flushTabUrl(tabId) {
+  const url = tabLastUrl.get(tabId);
+  if (!url || isSystemUrl(url)) return;
+
+  const key = `${tabId}:${normalizeUrl(url)}`;
+  if (tabCheckCache.has(key)) return;
+
+  await checkAndCloseTab(tabId, url, { force: true });
+}
+
+function handleNavigation(tabId, url) {
+  if (!tabId || !url) return;
+  checkAndCloseTab(tabId, url);
 }
 
 function getSummary() {
@@ -561,12 +625,19 @@ chrome.runtime.onStartup.addListener(async () => {
   await ensureCache();
 });
 
+chrome.runtime.onSuspend.addListener(() => {
+  persistOnSuspend();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== PERSIST_ALARM) return;
+  ensureCache().then(() => flushCache());
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
-  for (const key of tabCheckCache.keys()) {
-    if (key.startsWith(`${tabId}:`)) {
-      tabCheckCache.delete(key);
-    }
-  }
+  flushTabUrl(tabId).finally(() => {
+    clearTabTracking(tabId);
+  });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -597,20 +668,36 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
-  if (tab.id && tab.pendingUrl) {
-    checkAndCloseTab(tab.id, tab.pendingUrl);
-  } else if (tab.id && tab.url) {
-    checkAndCloseTab(tab.id, tab.url);
+  if (!tab.id) return;
+
+  const url = tab.pendingUrl || tab.url;
+  if (url) {
+    handleNavigation(tab.id, url);
   }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== "complete") return;
-
   const url = changeInfo.url || tab.url || tab.pendingUrl;
-  if (url) {
-    checkAndCloseTab(tabId, url);
+  if (!url) return;
+
+  if (changeInfo.url || changeInfo.status === "loading" || changeInfo.status === "complete") {
+    handleNavigation(tabId, url);
   }
+});
+
+chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+  if (details.frameId !== 0) return;
+  trackTabUrl(details.tabId, details.url);
+});
+
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId !== 0) return;
+  handleNavigation(details.tabId, details.url);
+});
+
+chrome.webNavigation.onCompleted.addListener((details) => {
+  if (details.frameId !== 0) return;
+  handleNavigation(details.tabId, details.url);
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
